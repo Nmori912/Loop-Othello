@@ -99,6 +99,11 @@ class LoopingOthello:
         self.clock = pygame.time.Clock()
         self.font = japanese_font(30)
         self.small_font = japanese_font(22)
+        self.title_font = japanese_font(52)
+        self.button_font = japanese_font(26)
+        self.view = "title"
+        self.start_button = pygame.Rect(WINDOW_WIDTH // 2 - 135, 500, 270, 58)
+        self.quit_button = pygame.Rect(WINDOW_WIDTH // 2 - 135, 572, 270, 48)
         self.reset()
 
     def reset(self) -> None:
@@ -147,7 +152,7 @@ class LoopingOthello:
             name = "黒" if self.winner == 1 else "白"
             self.message = f"{name}の勝ち！ 黒 {black} - 白 {white}"
 
-    def draw(self) -> None:
+    def draw_game(self) -> None:
         self.screen.fill(BACKGROUND)
         pygame.draw.rect(self.screen, PANEL, (0, 0, WINDOW_WIDTH, 96))
 
@@ -187,17 +192,84 @@ class LoopingOthello:
 
         pygame.display.flip()
 
+    def draw_title(self) -> None:
+        self.screen.fill(BACKGROUND)
+        pygame.draw.rect(self.screen, PANEL, (0, 0, WINDOW_WIDTH, 12))
+
+        title = self.title_font.render("ループオセロ", True, WHITE)
+        self.screen.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, 105)))
+        subtitle = self.small_font.render("つながる盤面で、いつものオセロに新しい一手を。", True, MUTED)
+        self.screen.blit(subtitle, subtitle.get_rect(center=(WINDOW_WIDTH // 2, 158)))
+
+        # Small board illustration with pieces near the wrapped edges.
+        tile = 42
+        board_size = tile * 4
+        board_x = (WINDOW_WIDTH - board_size) // 2
+        board_y = 205
+        pygame.draw.rect(self.screen, GREEN, (board_x, board_y, board_size, board_size), border_radius=5)
+        for i in range(5):
+            pygame.draw.line(self.screen, GRID, (board_x + i * tile, board_y),
+                             (board_x + i * tile, board_y + board_size), 2)
+            pygame.draw.line(self.screen, GRID, (board_x, board_y + i * tile),
+                             (board_x + board_size, board_y + i * tile), 2)
+        for x, y, color in ((0, 1, BLACK), (3, 2, WHITE), (1, 1, WHITE), (2, 2, BLACK)):
+            center = (board_x + x * tile + tile // 2, board_y + y * tile + tile // 2)
+            pygame.draw.circle(self.screen, color, center, tile // 2 - 5)
+
+        rule_lines = (
+            "盤面の左右・上下がつながっています",
+            "端を越えて相手の石を挟んでみよう",
+            "2人で交互にプレイ。黒が先手です",
+        )
+        for index, line in enumerate(rule_lines):
+            rendered = self.small_font.render(line, True, WHITE if index == 0 else MUTED)
+            self.screen.blit(rendered, rendered.get_rect(center=(WINDOW_WIDTH // 2, 400 + index * 30)))
+
+        mouse_pos = pygame.mouse.get_pos()
+        start_hover = self.start_button.collidepoint(mouse_pos)
+        start_color = (55, 154, 105) if start_hover else GREEN
+        pygame.draw.rect(self.screen, start_color, self.start_button, border_radius=10)
+        start_label = self.button_font.render("対局を始める", True, WHITE)
+        self.screen.blit(start_label, start_label.get_rect(center=self.start_button.center))
+
+        quit_hover = self.quit_button.collidepoint(mouse_pos)
+        quit_color = (60, 68, 75) if quit_hover else PANEL
+        pygame.draw.rect(self.screen, quit_color, self.quit_button, border_radius=10)
+        quit_label = self.small_font.render("終了", True, MUTED)
+        self.screen.blit(quit_label, quit_label.get_rect(center=self.quit_button.center))
+        pygame.display.flip()
+
+    def draw(self) -> None:
+        if self.view == "title":
+            self.draw_title()
+        else:
+            self.draw_game()
+
     def run(self) -> None:
         running = True
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                    self.reset()
+                elif event.type == pygame.KEYDOWN:
+                    if self.view == "title" and event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        self.reset()
+                        self.view = "game"
+                    elif self.view == "title" and event.key == pygame.K_ESCAPE:
+                        running = False
+                    elif self.view == "game" and event.key == pygame.K_r:
+                        self.reset()
+                    elif self.view == "game" and event.key == pygame.K_ESCAPE:
+                        self.view = "title"
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mx, my = event.pos
-                    if BOARD_X <= mx < BOARD_X + BOARD_PIXELS and BOARD_Y <= my < BOARD_Y + BOARD_PIXELS:
+                    if self.view == "title":
+                        if self.start_button.collidepoint(event.pos):
+                            self.reset()
+                            self.view = "game"
+                        elif self.quit_button.collidepoint(event.pos):
+                            running = False
+                    elif BOARD_X <= mx < BOARD_X + BOARD_PIXELS and BOARD_Y <= my < BOARD_Y + BOARD_PIXELS:
                         x = (mx - BOARD_X) // CELL_SIZE
                         y = (my - BOARD_Y) // CELL_SIZE
                         self.play(x, y)
