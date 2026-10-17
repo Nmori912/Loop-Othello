@@ -91,6 +91,33 @@ def legal_moves(board: list[list[int]], player: int) -> dict[tuple[int, int], li
     return moves
 
 
+def wrap_links_for(board: list[list[int]], x: int, y: int, player: int) -> list[tuple[tuple[int, int], tuple[int, int], int, int]]:
+    """Find edge crossings that are part of a successful capture ray."""
+    links = []
+    for dx, dy in DIRECTIONS:
+        crossed = []
+        has_opponent = False
+        for distance in range(1, BOARD_SIZE):
+            raw_x = x + dx * distance
+            raw_y = y + dy * distance
+            nx, ny = raw_x % BOARD_SIZE, raw_y % BOARD_SIZE
+            previous = ((x + dx * (distance - 1)) % BOARD_SIZE,
+                        (y + dy * (distance - 1)) % BOARD_SIZE)
+            if raw_x != nx or raw_y != ny:
+                crossed.append((previous, (nx, ny), dx, dy))
+
+            piece = board[ny][nx]
+            if piece == -player:
+                has_opponent = True
+            elif piece == player:
+                if has_opponent:
+                    links.extend(crossed)
+                break
+            else:
+                break
+    return links
+
+
 def apply_move(board: list[list[int]], move: tuple[int, int], captured: list[tuple[int, int]], player: int) -> list[list[int]]:
     next_board = [row[:] for row in board]
     x, y = move
@@ -173,9 +200,13 @@ class LoopingOthello:
         self.cpu_button = pygame.Rect(WINDOW_WIDTH // 2 + 10, 510, 220, 58)
         self.quit_button = pygame.Rect(WINDOW_WIDTH // 2 - 135, 584, 270, 48)
         self.mode = "pvp"
+        self.wrap_animations: list[tuple[int, list[tuple[tuple[int, int], tuple[int, int], int, int]]]] = []
+        self.computer_due_at: int | None = None
         self.reset()
 
     def reset(self) -> None:
+        self.computer_due_at = None
+        self.wrap_animations.clear()
         self.board = new_board()
         self.player = 1
         self.passed = False
@@ -190,6 +221,10 @@ class LoopingOthello:
         captured = self.moves.get((x, y))
         if captured is None:
             return
+
+        wrap_links = wrap_links_for(self.board, x, y, self.player)
+        if wrap_links:
+            self.wrap_animations.append((pygame.time.get_ticks() + 1300, wrap_links))
 
         self.board[y][x] = self.player
         for fx, fy in captured:
@@ -209,6 +244,11 @@ class LoopingOthello:
         else:
             self.message = f"{'黒' if self.player == 1 else '白'}の番です"
             self.passed = False
+
+    def schedule_computer_turn(self) -> None:
+        if self.mode == "cpu" and not self.game_over and self.player == -1 and self.moves:
+            self.computer_due_at = pygame.time.get_ticks() + 800
+            self.message = "CPUが考えています..."
 
     def play_computer_turn(self) -> None:
         if self.mode == "cpu" and not self.game_over and self.player == -1 and self.moves:
@@ -261,10 +301,41 @@ class LoopingOthello:
                     color = BLACK if piece == 1 else WHITE
                     pygame.draw.circle(self.screen, color, center, CELL_SIZE // 2 - 7)
                     pygame.draw.circle(self.screen, (12, 48, 35), center, CELL_SIZE // 2 - 7, 1)
-                elif (x, y) in self.moves:
+                elif (x, y) in self.moves and self.computer_due_at is None:
                     pygame.draw.circle(self.screen, (158, 220, 174), center, 6)
 
+        self.draw_wrap_animations()
+
         pygame.display.flip()
+
+    def draw_wrap_animations(self) -> None:
+        now = pygame.time.get_ticks()
+        self.wrap_animations = [(expires, links) for expires, links in self.wrap_animations if expires > now]
+        if not self.wrap_animations:
+            return
+
+        pulse = (now // 90) % 2
+        radius = 13 + pulse * 4
+        for _, links in self.wrap_animations:
+            for exit_cell, entry_cell, dx, dy in links:
+                for cell in (exit_cell, entry_cell):
+                    cx = BOARD_X + cell[0] * CELL_SIZE + CELL_SIZE // 2
+                    cy = BOARD_Y + cell[1] * CELL_SIZE + CELL_SIZE // 2
+                    pygame.draw.circle(self.screen, GOLD, (cx, cy), radius, 3)
+                    end = (cx + dx * 22, cy + dy * 22)
+                    pygame.draw.line(self.screen, GOLD, (cx, cy), end, 4)
+                    # Arrowhead makes the direction through the edge clear.
+                    px, py = -dy, dx
+                    tip = end
+                    base_x, base_y = end[0] - dx * 8, end[1] - dy * 8
+                    pygame.draw.polygon(self.screen, GOLD, [
+                        tip,
+                        (base_x + px * 5, base_y + py * 5),
+                        (base_x - px * 5, base_y - py * 5),
+                    ])
+
+        label = self.small_font.render("反対側へつながった！", True, GOLD)
+        self.screen.blit(label, label.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT - 15)))
 
     def draw_title(self) -> None:
         self.screen.fill(BACKGROUND)
@@ -340,6 +411,7 @@ class LoopingOthello:
                     elif self.view == "game" and event.key == pygame.K_r:
                         self.reset()
                     elif self.view == "game" and event.key == pygame.K_ESCAPE:
+                        self.computer_due_at = None
                         self.view = "title"
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mx, my = event.pos
@@ -354,11 +426,16 @@ class LoopingOthello:
                             self.view = "game"
                         elif self.quit_button.collidepoint(event.pos):
                             running = False
-                    elif BOARD_X <= mx < BOARD_X + BOARD_PIXELS and BOARD_Y <= my < BOARD_Y + BOARD_PIXELS:
+                    elif (self.computer_due_at is None
+                          and BOARD_X <= mx < BOARD_X + BOARD_PIXELS
+                          and BOARD_Y <= my < BOARD_Y + BOARD_PIXELS):
                         x = (mx - BOARD_X) // CELL_SIZE
                         y = (my - BOARD_Y) // CELL_SIZE
                         self.play(x, y)
-                        self.play_computer_turn()
+                        self.schedule_computer_turn()
+            if self.computer_due_at is not None and pygame.time.get_ticks() >= self.computer_due_at:
+                self.computer_due_at = None
+                self.play_computer_turn()
             self.draw()
             self.clock.tick(60)
 
