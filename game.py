@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import random
 
 import pygame
 
@@ -23,6 +24,7 @@ WHITE = (245, 244, 232)
 BLACK = (27, 30, 34)
 GOLD = (255, 210, 90)
 MUTED = (176, 187, 190)
+ASSIST = (105, 225, 255)
 
 DIRECTIONS = tuple(
     (dx, dy)
@@ -168,12 +170,18 @@ def minimax(board: list[list[int]], player: int, depth: int, alpha: float, beta:
     return best
 
 
-def choose_computer_move(board: list[list[int]]) -> tuple[int, int]:
+def choose_computer_move(board: list[list[int]], difficulty: str) -> tuple[int, int]:
     moves = legal_moves(board, -1)
     if not moves:
         raise ValueError("Computer has no legal move")
+    if difficulty == "easy":
+        return random.choice(list(moves))
+
     empty_count = BOARD_SIZE * BOARD_SIZE - sum(cell != 0 for row in board for cell in row)
-    depth = 5 if empty_count <= 10 else 3
+    if difficulty == "hard":
+        depth = 6 if empty_count <= 10 else 4
+    else:
+        depth = 5 if empty_count <= 10 else 3
     best_move = next(iter(moves))
     best_score = float("-inf")
     for move, captured in moves.items():
@@ -199,7 +207,16 @@ class LoopingOthello:
         self.pvp_button = pygame.Rect(WINDOW_WIDTH // 2 - 230, 510, 220, 58)
         self.cpu_button = pygame.Rect(WINDOW_WIDTH // 2 + 10, 510, 220, 58)
         self.quit_button = pygame.Rect(WINDOW_WIDTH // 2 - 135, 584, 270, 48)
+        self.difficulty_buttons = {
+            "easy": pygame.Rect(WINDOW_WIDTH // 2 - 220, 255, 440, 58),
+            "normal": pygame.Rect(WINDOW_WIDTH // 2 - 220, 330, 440, 58),
+            "hard": pygame.Rect(WINDOW_WIDTH // 2 - 220, 405, 440, 58),
+        }
+        self.back_button = pygame.Rect(WINDOW_WIDTH // 2 - 120, 505, 240, 48)
         self.mode = "pvp"
+        self.difficulty = "normal"
+        self.show_wrap_map = False
+        self.assist_enabled = True
         self.wrap_animations: list[tuple[int, list[tuple[tuple[int, int], tuple[int, int], int, int]]]] = []
         self.computer_due_at: int | None = None
         self.reset()
@@ -252,8 +269,13 @@ class LoopingOthello:
 
     def play_computer_turn(self) -> None:
         if self.mode == "cpu" and not self.game_over and self.player == -1 and self.moves:
-            x, y = choose_computer_move(self.board)
+            x, y = choose_computer_move(self.board, self.difficulty)
             self.play(x, y)
+
+    def start_game(self, mode: str) -> None:
+        self.mode = mode
+        self.reset()
+        self.view = "game"
 
     def finish(self) -> None:
         self.game_over = True
@@ -266,13 +288,38 @@ class LoopingOthello:
             name = "黒" if self.winner == 1 else "白"
             self.message = f"{name}の勝ち！ 黒 {black} - 白 {white}"
 
+    def board_layout(self) -> tuple[int, int, int]:
+        if not self.show_wrap_map:
+            return CELL_SIZE, BOARD_X, BOARD_Y
+        tile = 40
+        map_size = (BOARD_SIZE + 6) * tile
+        map_x = (WINDOW_WIDTH - map_size) // 2
+        map_y = BOARD_Y
+        return tile, map_x + 3 * tile, map_y + 3 * tile
+
+    def hovered_captures(self) -> set[tuple[int, int]]:
+        if not self.assist_enabled or self.computer_due_at is not None:
+            return set()
+        if self.mode == "cpu" and self.player == -1:
+            return set()
+        tile, board_x, board_y = self.board_layout()
+        mx, my = pygame.mouse.get_pos()
+        if not (board_x <= mx < board_x + BOARD_SIZE * tile
+                and board_y <= my < board_y + BOARD_SIZE * tile):
+            return set()
+        move = ((mx - board_x) // tile, (my - board_y) // tile)
+        return set(self.moves.get(move, ()))
+
     def draw_game(self) -> None:
         self.screen.fill(BACKGROUND)
         pygame.draw.rect(self.screen, PANEL, (0, 0, WINDOW_WIDTH, 96))
 
         title = self.font.render("ループオセロ", True, WHITE)
         self.screen.blit(title, (BOARD_X, 18))
-        hint = self.small_font.render("端を越えると反対側から出てきます", True, MUTED)
+        map_hint = "E: 通常表示" if self.show_wrap_map else "E: 周囲3マス"
+        assist_hint = "A: アシストON" if self.assist_enabled else "A: アシストOFF"
+        hint_text = f"{map_hint}   {assist_hint}"
+        hint = self.small_font.render(hint_text, True, MUTED)
         self.screen.blit(hint, (BOARD_X, 55))
 
         black = sum(cell == 1 for row in self.board for cell in row)
@@ -282,29 +329,58 @@ class LoopingOthello:
         status_color = GOLD if self.game_over else (WHITE if self.player == 1 else MUTED)
         status = self.font.render(self.message, True, status_color)
         self.screen.blit(status, (BOARD_X, 80))
-        restart = self.small_font.render("R: 最初から", True, MUTED)
+        restart_text = "Enter: タイトルへ" if self.game_over else "R: 最初から"
+        restart = self.small_font.render(restart_text, True, MUTED)
         self.screen.blit(restart, (WINDOW_WIDTH - 130, 82))
 
-        board_rect = pygame.Rect(BOARD_X, BOARD_Y, BOARD_PIXELS, BOARD_PIXELS)
-        pygame.draw.rect(self.screen, GREEN, board_rect)
-        for i in range(BOARD_SIZE + 1):
-            px = BOARD_X + i * CELL_SIZE
-            py = BOARD_Y + i * CELL_SIZE
-            pygame.draw.line(self.screen, GRID, (px, BOARD_Y), (px, BOARD_Y + BOARD_PIXELS), 2)
-            pygame.draw.line(self.screen, GRID, (BOARD_X, py), (BOARD_X + BOARD_PIXELS, py), 2)
+        tile, board_x, board_y = self.board_layout()
+        captures_preview = self.hovered_captures()
+        if self.show_wrap_map:
+            map_x, map_y = board_x - 3 * tile, board_y - 3 * tile
+            for vy in range(BOARD_SIZE + 6):
+                for vx in range(BOARD_SIZE + 6):
+                    x, y = (vx - 3) % BOARD_SIZE, (vy - 3) % BOARD_SIZE
+                    main_board = 3 <= vx < 11 and 3 <= vy < 11
+                    rect = pygame.Rect(map_x + vx * tile, map_y + vy * tile, tile, tile)
+                    pygame.draw.rect(self.screen, GREEN if main_board else (34, 91, 70), rect)
+                    pygame.draw.rect(self.screen, GRID, rect, 1)
+                    piece = self.board[y][x]
+                    center = rect.center
+                    if piece:
+                        color = BLACK if piece == 1 else WHITE
+                        pygame.draw.circle(self.screen, color, center, tile // 2 - 4)
+                        pygame.draw.circle(self.screen, (12, 48, 35), center, tile // 2 - 4, 1)
+                        if (x, y) in captures_preview:
+                            pygame.draw.circle(self.screen, ASSIST, center, tile // 2 - 2, 3)
+                    elif (x, y) in self.moves and self.computer_due_at is None:
+                        pygame.draw.circle(self.screen, (158, 220, 174), center, 4)
+            main_rect = pygame.Rect(board_x, board_y, BOARD_SIZE * tile, BOARD_SIZE * tile)
+            pygame.draw.rect(self.screen, GOLD, main_rect, 3)
+        else:
+            board_rect = pygame.Rect(board_x, board_y, BOARD_SIZE * tile, BOARD_SIZE * tile)
+            pygame.draw.rect(self.screen, GREEN, board_rect)
+            for i in range(BOARD_SIZE + 1):
+                px = board_x + i * tile
+                py = board_y + i * tile
+                pygame.draw.line(self.screen, GRID, (px, board_y), (px, board_y + BOARD_SIZE * tile), 2)
+                pygame.draw.line(self.screen, GRID, (board_x, py), (board_x + BOARD_SIZE * tile, py), 2)
 
-        for y, row in enumerate(self.board):
-            for x, piece in enumerate(row):
-                center = (BOARD_X + x * CELL_SIZE + CELL_SIZE // 2,
-                          BOARD_Y + y * CELL_SIZE + CELL_SIZE // 2)
-                if piece:
-                    color = BLACK if piece == 1 else WHITE
-                    pygame.draw.circle(self.screen, color, center, CELL_SIZE // 2 - 7)
-                    pygame.draw.circle(self.screen, (12, 48, 35), center, CELL_SIZE // 2 - 7, 1)
-                elif (x, y) in self.moves and self.computer_due_at is None:
-                    pygame.draw.circle(self.screen, (158, 220, 174), center, 6)
+            for y, row in enumerate(self.board):
+                for x, piece in enumerate(row):
+                    center = (board_x + x * tile + tile // 2, board_y + y * tile + tile // 2)
+                    if piece:
+                        color = BLACK if piece == 1 else WHITE
+                        pygame.draw.circle(self.screen, color, center, tile // 2 - 7)
+                        pygame.draw.circle(self.screen, (12, 48, 35), center, tile // 2 - 7, 1)
+                        if (x, y) in captures_preview:
+                            pygame.draw.circle(self.screen, ASSIST, center, tile // 2 - 3, 3)
+                    elif (x, y) in self.moves and self.computer_due_at is None:
+                        pygame.draw.circle(self.screen, (158, 220, 174), center, 6)
 
         self.draw_wrap_animations()
+        if self.show_wrap_map and not self.wrap_animations:
+            footer = self.small_font.render("外側のマスは反対側の続きです", True, MUTED)
+            self.screen.blit(footer, footer.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT - 15)))
 
         pygame.display.flip()
 
@@ -315,19 +391,21 @@ class LoopingOthello:
             return
 
         pulse = (now // 90) % 2
-        radius = 13 + pulse * 4
+        tile, board_x, board_y = self.board_layout()
+        radius = min(tile // 4, 13 + pulse * 4)
         for _, links in self.wrap_animations:
             for exit_cell, entry_cell, dx, dy in links:
                 for cell in (exit_cell, entry_cell):
-                    cx = BOARD_X + cell[0] * CELL_SIZE + CELL_SIZE // 2
-                    cy = BOARD_Y + cell[1] * CELL_SIZE + CELL_SIZE // 2
+                    cx = board_x + cell[0] * tile + tile // 2
+                    cy = board_y + cell[1] * tile + tile // 2
                     pygame.draw.circle(self.screen, GOLD, (cx, cy), radius, 3)
-                    end = (cx + dx * 22, cy + dy * 22)
-                    pygame.draw.line(self.screen, GOLD, (cx, cy), end, 4)
+                    arrow_length = tile // 3
+                    end = (cx + dx * arrow_length, cy + dy * arrow_length)
+                    pygame.draw.line(self.screen, GOLD, (cx, cy), end, 3)
                     # Arrowhead makes the direction through the edge clear.
                     px, py = -dy, dx
                     tip = end
-                    base_x, base_y = end[0] - dx * 8, end[1] - dy * 8
+                    base_x, base_y = end[0] - dx * 7, end[1] - dy * 7
                     pygame.draw.polygon(self.screen, GOLD, [
                         tip,
                         (base_x + px * 5, base_y + py * 5),
@@ -390,9 +468,34 @@ class LoopingOthello:
         self.screen.blit(quit_label, quit_label.get_rect(center=self.quit_button.center))
         pygame.display.flip()
 
+    def draw_difficulty(self) -> None:
+        self.screen.fill(BACKGROUND)
+        pygame.draw.rect(self.screen, PANEL, (0, 0, WINDOW_WIDTH, 12))
+        title = self.title_font.render("CPUの強さ", True, WHITE)
+        self.screen.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, 125)))
+        subtitle = self.small_font.render("対戦相手のレベルを選んでください", True, MUTED)
+        self.screen.blit(subtitle, subtitle.get_rect(center=(WINDOW_WIDTH // 2, 185)))
+
+        labels = {"easy": "かんたん  —  ランダムに着手", "normal": "ふつう  —  数手先まで読む",
+                  "hard": "つよい  —  より深く読む"}
+        mouse_pos = pygame.mouse.get_pos()
+        for level, rect in self.difficulty_buttons.items():
+            color = (55, 154, 105) if rect.collidepoint(mouse_pos) else GREEN
+            pygame.draw.rect(self.screen, color, rect, border_radius=10)
+            label = self.button_font.render(labels[level], True, WHITE)
+            self.screen.blit(label, label.get_rect(center=rect.center))
+
+        back_color = (60, 68, 75) if self.back_button.collidepoint(mouse_pos) else PANEL
+        pygame.draw.rect(self.screen, back_color, self.back_button, border_radius=10)
+        back_label = self.small_font.render("タイトルへ戻る", True, MUTED)
+        self.screen.blit(back_label, back_label.get_rect(center=self.back_button.center))
+        pygame.display.flip()
+
     def draw(self) -> None:
         if self.view == "title":
             self.draw_title()
+        elif self.view == "difficulty":
+            self.draw_difficulty()
         else:
             self.draw_game()
 
@@ -404,12 +507,23 @@ class LoopingOthello:
                     running = False
                 elif event.type == pygame.KEYDOWN:
                     if self.view == "title" and event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        self.reset()
-                        self.view = "game"
+                        self.start_game("pvp")
                     elif self.view == "title" and event.key == pygame.K_ESCAPE:
                         running = False
+                    elif self.view == "difficulty" and event.key == pygame.K_ESCAPE:
+                        self.view = "title"
+                    elif self.view == "difficulty" and event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
+                        self.difficulty = {pygame.K_1: "easy", pygame.K_2: "normal", pygame.K_3: "hard"}[event.key]
+                        self.start_game("cpu")
+                    elif self.view == "game" and self.game_over and event.key == pygame.K_RETURN:
+                        self.computer_due_at = None
+                        self.view = "title"
                     elif self.view == "game" and event.key == pygame.K_r:
                         self.reset()
+                    elif self.view == "game" and event.key == pygame.K_e:
+                        self.show_wrap_map = not self.show_wrap_map
+                    elif self.view == "game" and event.key == pygame.K_a:
+                        self.assist_enabled = not self.assist_enabled
                     elif self.view == "game" and event.key == pygame.K_ESCAPE:
                         self.computer_due_at = None
                         self.view = "title"
@@ -417,22 +531,28 @@ class LoopingOthello:
                     mx, my = event.pos
                     if self.view == "title":
                         if self.pvp_button.collidepoint(event.pos):
-                            self.mode = "pvp"
-                            self.reset()
-                            self.view = "game"
+                            self.start_game("pvp")
                         elif self.cpu_button.collidepoint(event.pos):
-                            self.mode = "cpu"
-                            self.reset()
-                            self.view = "game"
+                            self.view = "difficulty"
                         elif self.quit_button.collidepoint(event.pos):
                             running = False
-                    elif (self.computer_due_at is None
-                          and BOARD_X <= mx < BOARD_X + BOARD_PIXELS
-                          and BOARD_Y <= my < BOARD_Y + BOARD_PIXELS):
-                        x = (mx - BOARD_X) // CELL_SIZE
-                        y = (my - BOARD_Y) // CELL_SIZE
-                        self.play(x, y)
-                        self.schedule_computer_turn()
+                    elif self.view == "difficulty":
+                        selected = next((level for level, rect in self.difficulty_buttons.items()
+                                         if rect.collidepoint(event.pos)), None)
+                        if selected:
+                            self.difficulty = selected
+                            self.start_game("cpu")
+                        elif self.back_button.collidepoint(event.pos):
+                            self.view = "title"
+                    else:
+                        tile, board_x, board_y = self.board_layout()
+                        if (self.computer_due_at is None
+                                and board_x <= mx < board_x + BOARD_SIZE * tile
+                                and board_y <= my < board_y + BOARD_SIZE * tile):
+                            x = (mx - board_x) // tile
+                            y = (my - board_y) // tile
+                            self.play(x, y)
+                            self.schedule_computer_turn()
             if self.computer_due_at is not None and pygame.time.get_ticks() >= self.computer_due_at:
                 self.computer_due_at = None
                 self.play_computer_turn()
