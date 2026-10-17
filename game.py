@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import sys
+import math
 import random
+import sys
 
 import pygame
 
@@ -218,12 +219,14 @@ class LoopingOthello:
         self.show_wrap_map = False
         self.assist_enabled = True
         self.wrap_animations: list[tuple[int, list[tuple[tuple[int, int], tuple[int, int], int, int]]]] = []
+        self.move_animations: list[tuple[int, int, tuple[int, int], list[tuple[int, int]]]] = []
         self.computer_due_at: int | None = None
         self.reset()
 
     def reset(self) -> None:
         self.computer_due_at = None
         self.wrap_animations.clear()
+        self.move_animations.clear()
         self.board = new_board()
         self.player = 1
         self.passed = False
@@ -240,6 +243,12 @@ class LoopingOthello:
             return
 
         wrap_links = wrap_links_for(self.board, x, y, self.player)
+        ordered_captures = sorted(
+            captured,
+            key=lambda cell: min((cell[0] - x) % BOARD_SIZE, (x - cell[0]) % BOARD_SIZE)
+            + min((cell[1] - y) % BOARD_SIZE, (y - cell[1]) % BOARD_SIZE),
+        )
+        self.move_animations.append((pygame.time.get_ticks(), self.player, (x, y), ordered_captures))
         if wrap_links:
             self.wrap_animations.append((pygame.time.get_ticks() + 1300, wrap_links))
 
@@ -310,6 +319,18 @@ class LoopingOthello:
         move = ((mx - board_x) // tile, (my - board_y) // tile)
         return set(self.moves.get(move, ()))
 
+    def displayed_piece(self, x: int, y: int, now: int) -> int:
+        for started, player, placed, captured in reversed(self.move_animations):
+            if (x, y) == placed and now < started + 320:
+                return 0
+            try:
+                index = captured.index((x, y))
+            except ValueError:
+                continue
+            if now < started + index * 26 + 420:
+                return -player
+        return self.board[y][x]
+
     def draw_game(self) -> None:
         self.screen.fill(BACKGROUND)
         pygame.draw.rect(self.screen, PANEL, (0, 0, WINDOW_WIDTH, 96))
@@ -334,6 +355,7 @@ class LoopingOthello:
         self.screen.blit(restart, (WINDOW_WIDTH - 130, 82))
 
         tile, board_x, board_y = self.board_layout()
+        now = pygame.time.get_ticks()
         captures_preview = self.hovered_captures()
         if self.show_wrap_map:
             map_x, map_y = board_x - 3 * tile, board_y - 3 * tile
@@ -344,7 +366,7 @@ class LoopingOthello:
                     rect = pygame.Rect(map_x + vx * tile, map_y + vy * tile, tile, tile)
                     pygame.draw.rect(self.screen, GREEN if main_board else (34, 91, 70), rect)
                     pygame.draw.rect(self.screen, GRID, rect, 1)
-                    piece = self.board[y][x]
+                    piece = self.displayed_piece(x, y, now)
                     center = rect.center
                     if piece:
                         color = BLACK if piece == 1 else WHITE
@@ -368,6 +390,7 @@ class LoopingOthello:
             for y, row in enumerate(self.board):
                 for x, piece in enumerate(row):
                     center = (board_x + x * tile + tile // 2, board_y + y * tile + tile // 2)
+                    piece = self.displayed_piece(x, y, now)
                     if piece:
                         color = BLACK if piece == 1 else WHITE
                         pygame.draw.circle(self.screen, color, center, tile // 2 - 7)
@@ -377,12 +400,81 @@ class LoopingOthello:
                     elif (x, y) in self.moves and self.computer_due_at is None:
                         pygame.draw.circle(self.screen, (158, 220, 174), center, 6)
 
+        self.draw_move_animations(now)
         self.draw_wrap_animations()
         if self.show_wrap_map and not self.wrap_animations:
             footer = self.small_font.render("外側のマスは反対側の続きです", True, MUTED)
             self.screen.blit(footer, footer.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT - 15)))
 
         pygame.display.flip()
+
+    def visible_cell_centers(self, x: int, y: int) -> list[tuple[int, int, tuple[int, int, int]]]:
+        tile, board_x, board_y = self.board_layout()
+        if not self.show_wrap_map:
+            return [(board_x + x * tile + tile // 2,
+                     board_y + y * tile + tile // 2, GREEN)]
+
+        map_x, map_y = board_x - 3 * tile, board_y - 3 * tile
+        centers = []
+        visible_x = [x + 3 + offset * BOARD_SIZE for offset in (-1, 0, 1, 2)
+                     if 0 <= x + 3 + offset * BOARD_SIZE < BOARD_SIZE + 6]
+        visible_y = [y + 3 + offset * BOARD_SIZE for offset in (-1, 0, 1, 2)
+                     if 0 <= y + 3 + offset * BOARD_SIZE < BOARD_SIZE + 6]
+        for vy in visible_y:
+            for vx in visible_x:
+                main = 3 <= vx < 11 and 3 <= vy < 11
+                color = GREEN if main else (34, 91, 70)
+                centers.append((map_x + vx * tile + tile // 2,
+                                map_y + vy * tile + tile // 2, color))
+        return centers
+
+    def draw_move_animations(self, now: int) -> None:
+        self.move_animations = [
+            effect for effect in self.move_animations
+            if now < effect[0] + 450 + max(0, len(effect[3]) - 1) * 26
+        ]
+        tile, _, _ = self.board_layout()
+
+        for started, player, placed, captured in self.move_animations:
+            placed_progress = (now - started) / 320
+            if 0 <= placed_progress < 1:
+                scale = 0.25 + 0.75 * (1 - (1 - placed_progress) ** 3)
+                disc_radius = tile // 2 - (7 if not self.show_wrap_map else 4)
+                for cx, cy, background in self.visible_cell_centers(*placed):
+                    pygame.draw.circle(self.screen, background, (cx, cy), disc_radius + 4)
+                    pygame.draw.circle(self.screen, (0, 0, 0), (cx + 1, cy + 2),
+                                       max(1, int(disc_radius * scale)))
+                    color = BLACK if player == 1 else WHITE
+                    pygame.draw.circle(self.screen, color, (cx, cy), max(1, int(disc_radius * scale)))
+                    ring_radius = disc_radius + 5 + int(placed_progress * 15)
+                    pygame.draw.circle(self.screen, GOLD, (cx, cy), ring_radius, 2)
+
+                    for spark in range(8):
+                        angle = spark * math.tau / 8 + placed_progress * 3
+                        distance = disc_radius + 7 + placed_progress * 12
+                        sx = int(cx + math.cos(angle) * distance)
+                        sy = int(cy + math.sin(angle) * distance)
+                        spark_radius = max(1, int(3 * (1 - placed_progress)))
+                        pygame.draw.circle(self.screen, GOLD, (sx, sy), spark_radius)
+
+            for index, cell in enumerate(captured):
+                progress = (now - (started + index * 26)) / 420
+                if not 0 <= progress < 1:
+                    continue
+                disc_radius = tile // 2 - (7 if not self.show_wrap_map else 4)
+                old_color = WHITE if player == 1 else BLACK
+                new_color = BLACK if player == 1 else WHITE
+                color = old_color if progress < 0.5 else new_color
+                width = max(2, int(disc_radius * 2 * abs(1 - 2 * progress)))
+                for cx, cy, background in self.visible_cell_centers(*cell):
+                    pygame.draw.circle(self.screen, background, (cx, cy), disc_radius + 3)
+                    ellipse = pygame.Rect(cx - width // 2, cy - disc_radius,
+                                         width, disc_radius * 2)
+                    pygame.draw.ellipse(self.screen, color, ellipse)
+                    pygame.draw.ellipse(self.screen, (12, 48, 35), ellipse, 1)
+                    if 0.38 < progress < 0.62:
+                        flare_radius = disc_radius + int(3 * math.sin(progress * math.pi))
+                        pygame.draw.circle(self.screen, GOLD, (cx, cy), flare_radius, 2)
 
     def draw_wrap_animations(self) -> None:
         now = pygame.time.get_ticks()
@@ -393,11 +485,14 @@ class LoopingOthello:
         pulse = (now // 90) % 2
         tile, board_x, board_y = self.board_layout()
         radius = min(tile // 4, 13 + pulse * 4)
-        for _, links in self.wrap_animations:
+        for expires, links in self.wrap_animations:
+            started = expires - 1300
+            progress = max(0.0, min(1.0, (now - started) / 1300))
             for exit_cell, entry_cell, dx, dy in links:
                 for cell in (exit_cell, entry_cell):
                     cx = board_x + cell[0] * tile + tile // 2
                     cy = board_y + cell[1] * tile + tile // 2
+                    pygame.draw.circle(self.screen, ASSIST, (cx, cy), radius + 5, 1)
                     pygame.draw.circle(self.screen, GOLD, (cx, cy), radius, 3)
                     arrow_length = tile // 3
                     end = (cx + dx * arrow_length, cy + dy * arrow_length)
@@ -411,6 +506,10 @@ class LoopingOthello:
                         (base_x + px * 5, base_y + py * 5),
                         (base_x - px * 5, base_y - py * 5),
                     ])
+                    angle = progress * math.tau * 2 + (cell[0] + cell[1])
+                    spark_x = int(cx + math.cos(angle) * (radius + 9))
+                    spark_y = int(cy + math.sin(angle) * (radius + 9))
+                    pygame.draw.circle(self.screen, WHITE, (spark_x, spark_y), 3)
 
         label = self.small_font.render("反対側へつながった！", True, GOLD)
         self.screen.blit(label, label.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT - 15)))
