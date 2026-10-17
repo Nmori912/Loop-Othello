@@ -91,6 +91,73 @@ def legal_moves(board: list[list[int]], player: int) -> dict[tuple[int, int], li
     return moves
 
 
+def apply_move(board: list[list[int]], move: tuple[int, int], captured: list[tuple[int, int]], player: int) -> list[list[int]]:
+    next_board = [row[:] for row in board]
+    x, y = move
+    next_board[y][x] = player
+    for fx, fy in captured:
+        next_board[fy][fx] = player
+    return next_board
+
+
+def evaluate_board(board: list[list[int]]) -> float:
+    """Evaluate from White's perspective; toroidal boards have no special corners."""
+    black_discs = sum(cell == 1 for row in board for cell in row)
+    white_discs = sum(cell == -1 for row in board for cell in row)
+    occupied = black_discs + white_discs
+    phase = occupied / (BOARD_SIZE * BOARD_SIZE)
+
+    white_mobility = len(legal_moves(board, -1))
+    black_mobility = len(legal_moves(board, 1))
+    return (white_discs - black_discs) * (1 + 4 * phase) + (white_mobility - black_mobility) * 10 * (1 - phase)
+
+
+def minimax(board: list[list[int]], player: int, depth: int, alpha: float, beta: float) -> float:
+    moves = legal_moves(board, player)
+    if depth == 0:
+        return evaluate_board(board)
+    if not moves:
+        if not legal_moves(board, -player):
+            return evaluate_board(board) * 100
+        return minimax(board, -player, depth - 1, alpha, beta)
+
+    if player == -1:
+        best = float("-inf")
+        for move, captured in moves.items():
+            score = minimax(apply_move(board, move, captured, player), 1, depth - 1, alpha, beta)
+            best = max(best, score)
+            alpha = max(alpha, best)
+            if beta <= alpha:
+                break
+        return best
+
+    best = float("inf")
+    for move, captured in moves.items():
+        score = minimax(apply_move(board, move, captured, player), -1, depth - 1, alpha, beta)
+        best = min(best, score)
+        beta = min(beta, best)
+        if beta <= alpha:
+            break
+    return best
+
+
+def choose_computer_move(board: list[list[int]]) -> tuple[int, int]:
+    moves = legal_moves(board, -1)
+    if not moves:
+        raise ValueError("Computer has no legal move")
+    empty_count = BOARD_SIZE * BOARD_SIZE - sum(cell != 0 for row in board for cell in row)
+    depth = 5 if empty_count <= 10 else 3
+    best_move = next(iter(moves))
+    best_score = float("-inf")
+    for move, captured in moves.items():
+        score = minimax(apply_move(board, move, captured, -1), 1, depth - 1,
+                        float("-inf"), float("inf"))
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return best_move
+
+
 class LoopingOthello:
     def __init__(self) -> None:
         pygame.init()
@@ -102,8 +169,10 @@ class LoopingOthello:
         self.title_font = japanese_font(52)
         self.button_font = japanese_font(26)
         self.view = "title"
-        self.start_button = pygame.Rect(WINDOW_WIDTH // 2 - 135, 500, 270, 58)
-        self.quit_button = pygame.Rect(WINDOW_WIDTH // 2 - 135, 572, 270, 48)
+        self.pvp_button = pygame.Rect(WINDOW_WIDTH // 2 - 230, 510, 220, 58)
+        self.cpu_button = pygame.Rect(WINDOW_WIDTH // 2 + 10, 510, 220, 58)
+        self.quit_button = pygame.Rect(WINDOW_WIDTH // 2 - 135, 584, 270, 48)
+        self.mode = "pvp"
         self.reset()
 
     def reset(self) -> None:
@@ -140,6 +209,11 @@ class LoopingOthello:
         else:
             self.message = f"{'黒' if self.player == 1 else '白'}の番です"
             self.passed = False
+
+    def play_computer_turn(self) -> None:
+        if self.mode == "cpu" and not self.game_over and self.player == -1 and self.moves:
+            x, y = choose_computer_move(self.board)
+            self.play(x, y)
 
     def finish(self) -> None:
         self.game_over = True
@@ -219,18 +293,24 @@ class LoopingOthello:
         rule_lines = (
             "盤面の左右・上下がつながっています",
             "端を越えて相手の石を挟んでみよう",
-            "2人で交互にプレイ。黒が先手です",
+            "黒が先手。CPU戦では白がCPUです",
         )
         for index, line in enumerate(rule_lines):
             rendered = self.small_font.render(line, True, WHITE if index == 0 else MUTED)
             self.screen.blit(rendered, rendered.get_rect(center=(WINDOW_WIDTH // 2, 400 + index * 30)))
 
         mouse_pos = pygame.mouse.get_pos()
-        start_hover = self.start_button.collidepoint(mouse_pos)
-        start_color = (55, 154, 105) if start_hover else GREEN
-        pygame.draw.rect(self.screen, start_color, self.start_button, border_radius=10)
-        start_label = self.button_font.render("対局を始める", True, WHITE)
-        self.screen.blit(start_label, start_label.get_rect(center=self.start_button.center))
+        pvp_hover = self.pvp_button.collidepoint(mouse_pos)
+        pvp_color = (55, 154, 105) if pvp_hover else GREEN
+        pygame.draw.rect(self.screen, pvp_color, self.pvp_button, border_radius=10)
+        pvp_label = self.button_font.render("人 対 人", True, WHITE)
+        self.screen.blit(pvp_label, pvp_label.get_rect(center=self.pvp_button.center))
+
+        cpu_hover = self.cpu_button.collidepoint(mouse_pos)
+        cpu_color = (55, 154, 105) if cpu_hover else GREEN
+        pygame.draw.rect(self.screen, cpu_color, self.cpu_button, border_radius=10)
+        cpu_label = self.button_font.render("人 対 CPU", True, WHITE)
+        self.screen.blit(cpu_label, cpu_label.get_rect(center=self.cpu_button.center))
 
         quit_hover = self.quit_button.collidepoint(mouse_pos)
         quit_color = (60, 68, 75) if quit_hover else PANEL
@@ -264,7 +344,12 @@ class LoopingOthello:
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mx, my = event.pos
                     if self.view == "title":
-                        if self.start_button.collidepoint(event.pos):
+                        if self.pvp_button.collidepoint(event.pos):
+                            self.mode = "pvp"
+                            self.reset()
+                            self.view = "game"
+                        elif self.cpu_button.collidepoint(event.pos):
+                            self.mode = "cpu"
                             self.reset()
                             self.view = "game"
                         elif self.quit_button.collidepoint(event.pos):
@@ -273,6 +358,7 @@ class LoopingOthello:
                         x = (mx - BOARD_X) // CELL_SIZE
                         y = (my - BOARD_Y) // CELL_SIZE
                         self.play(x, y)
+                        self.play_computer_turn()
             self.draw()
             self.clock.tick(60)
 
